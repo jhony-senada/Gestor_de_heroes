@@ -5,7 +5,7 @@ public class Mission {
     public String stat2;
     public int difficulty;
     public boolean isBoss;
-    public int timeleft=25;
+    public int timeleft=40;
     
     public Mission(String title, String stat1, String stat2, int difficulty,boolean isBoss) {
         this.title = title;

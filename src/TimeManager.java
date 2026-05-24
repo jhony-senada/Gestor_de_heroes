@@ -48,7 +48,7 @@ public class TimeManager {
                 updateUICallback.run();
             }
         });
-        recoveryTimer = new Timer(23000, e -> {
+        recoveryTimer = new Timer(15000, e -> {
             boolean someoneRecovered = false;
             
             // Recorremos nuestra lista enlazada personalizada
