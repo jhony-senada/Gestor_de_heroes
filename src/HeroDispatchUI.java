@@ -1,5 +1,6 @@
 import javax.swing.*;
 import java.awt.*;
+import java.util.function.Consumer; 
 import java.util.Random;
 
 public class HeroDispatchUI extends JFrame {
@@ -14,6 +15,8 @@ public class HeroDispatchUI extends JFrame {
     private JLabel timeLabel;
     private JLabel scoreLabel; 
     private int successfulMissions = 0; // Para llevar la cuenta
+    private MusicPlayer musicPlayer;
+    private boolean isPlayingBossMusic = false; // Bandera para no reiniciar la canción a cada segundo
     public HeroDispatchUI() {
         heroManager = new HeroManager();
         missionQueue = new MissionPQ();
@@ -25,8 +28,49 @@ public class HeroDispatchUI extends JFrame {
             if(timeManager !=null &&timeLabel!=null){
                 timeLabel.setText(timeManager.getFormattedTime());
             }
+            if (musicPlayer != null) {
+                // Espiamos quién está en la cima de la cola de emergencias
+                Mission topPrio = missionQueue.peek();
+                boolean bossIsPresent = (topPrio != null && topPrio.isBoss);
+
+                // Si hay un jefe y NO está sonando la música de jefe -> ¡Cámbiala!
+                if (bossIsPresent && !isPlayingBossMusic) {
+                    musicPlayer.playBackgroundMusic("assets/Pressing_Pursuit.wav"); 
+                    isPlayingBossMusic = true;
+                } 
+                // Si NO hay jefe y TODAVÍA está sonando la música de jefe -> ¡Regresa a la normal!
+                else if (!bossIsPresent && isPlayingBossMusic) {
+                    musicPlayer.playBackgroundMusic("assets/Shift_Z.wav");
+                    isPlayingBossMusic = false;
+                }
+            }
         };
-        timeManager = new TimeManager(missionQueue, missionGenerator, heroManager.getRoster(), updateUI);
+        Consumer<Mission> onExpired = (expiredMission) -> {
+            int penalty = 0;
+            if (expiredMission.isBoss) {
+                penalty = 50; 
+            } else {
+                switch (expiredMission.difficulty) {
+                    case 1: penalty = 1; break; case 2: penalty = 4; break;
+                    case 3: penalty = 8; break; case 4: penalty = 12; break;
+                    case 5: penalty = 16; break; case 6: penalty = 20; break;
+                }
+            }
+            
+            int currentConfidence = confidenceBar.getValue();
+            int newConfidence = Math.max(0, currentConfidence - penalty); 
+            confidenceBar.setValue(newConfidence);
+            confidenceBar.setString("Confianza: " + newConfidence + "%"); 
+            
+            // Refrescar el texto de las misiones para que desaparezca
+            missionsArea.setText(missionQueue.getAllMissionsText());
+            
+            if (newConfidence == 0) {
+                timeManager.pauseGameTime(); 
+                JOptionPane.showMessageDialog(this, "¡La confianza ha llegado a cero por ignorar emergencias!\nDespedido.", "Game Over", JOptionPane.ERROR_MESSAGE);
+            }
+        };
+        timeManager = new TimeManager(missionQueue, missionGenerator, heroManager.getRoster(), updateUI,onExpired);
 
         setTitle("Hero Dispatch Management");
         setSize(1000, 600);
@@ -126,7 +170,7 @@ public class HeroDispatchUI extends JFrame {
         btnMandar.setForeground(new Color(0, 150, 150));
         btnMandar.setBorder(BorderFactory.createLineBorder(new Color(0, 150, 150), 2));
         btnMandar.addActionListener(e->{
-if (missionQueue.isEmpty()) {
+            if (missionQueue.isEmpty()) {
                 JOptionPane.showMessageDialog(this, "No hay emergencias en este momento.");
                 return;
             }
@@ -136,13 +180,50 @@ if (missionQueue.isEmpty()) {
                 JOptionPane.showMessageDialog(this, selectedHero.getName() + " está descansando. ¡Elige a otro héroe!", "Héroe Ocupado", JOptionPane.WARNING_MESSAGE);
                 return;
             }
-
+            Mission mission=missionQueue.peek();
+            Hero selectedHero2 = null;
+            if(mission.isBoss){
+                JComboBox<Hero> suportSelector = new JComboBox<>();
+                HeroLinkedList roster2 = heroManager.getRoster();
+                for (int i=0;i<roster2.size();i++){
+                    Hero h=roster2.get(i);
+                    if (h.isAvailable() && h != selectedHero) {
+                        suportSelector.addItem(h);
+                    }
+                }
+                if (suportSelector.getItemCount() == 0) {
+                    JOptionPane.showMessageDialog(this, 
+                        "¡Se necesitan 2 héroes disponibles para enfrentar a un jefe!\n" + selectedHero.getName() + " no puede ir solo.", 
+                        "Sin Refuerzos", JOptionPane.ERROR_MESSAGE);
+                    return; 
+                }
+                int option = JOptionPane.showConfirmDialog(this, suportSelector, 
+                        "¡JEFE DETECTADO! Elige un compañero de apoyo para " + selectedHero.getName() + ":", 
+                        JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);            
+                if (option != JOptionPane.OK_OPTION) {
+                    return; // Si cancela el diálogo, detenemos la operación
+                }
+                selectedHero2 = (Hero) suportSelector.getSelectedItem();
+            }
+            missionQueue.dequeue();
             // 2. Extraer la misión y preparar las variables
-            Mission mission = missionQueue.dequeue();
             int poolMax = mission.difficulty * 2; // El dado será del 1 al (Dificultad * 2)
             int val1 = getStatValue(selectedHero, mission.stat1);
             int val2 = getStatValue(selectedHero, mission.stat2);
-            
+            int combinedLuck = selectedHero.getLuck();
+            String teamNames = selectedHero.getName();
+            if (selectedHero2 != null) {
+                val1 += getStatValue(selectedHero2, mission.stat1);
+                val2 += getStatValue(selectedHero2, mission.stat2);
+                
+                // La suerte del equipo será el promedio de ambos (redondeado hacia arriba)
+                combinedLuck = (int) Math.ceil((combinedLuck + selectedHero2.getLuck()) / 2.0);
+                teamNames += " y " + selectedHero2.getName();
+                
+                // Cansamos al segundo héroe
+                selectedHero2.setAvailable(false); 
+            }
+
             Random dice = new Random();
             boolean success = false;
             String reporte = "";
@@ -150,29 +231,30 @@ if (missionQueue.isEmpty()) {
             if (val1 >= poolMax) {
                 success = true;
                 reporte = "¡OVERKILL!\nFelicidades, mandaste a dios a bajar a un gato de un árbol.\n" + 
-                          selectedHero.getName() + " completó la misión pestañeando porque su " + mission.stat1 + " (" + val1 + ") es una brutalidad para este nivel.";
+                          teamNames + " completó la misión pestañeando porque su " + mission.stat1 + " (" + val1 + ") es una brutalidad para este nivel.";
             }else{
 
                 // 3. INTENTO 1: Estadística Principal
                 int roll1 = dice.nextInt(poolMax) + 1; // Tirar dado
                 if (roll1 <= val1) {
                     success = true;
-                    reporte = "¡ÉXITO!\n" + selectedHero.getName() + " completó la misión magistralmente usando " + mission.stat1 + ".\n(Sacó " + roll1 + " en un dado de " + poolMax + " y necesitaba " + val1 + " o menos)";
+                    reporte = "¡ÉXITO!\n" + teamNames + " completó la misión magistralmente usando " + mission.stat1 + ".\n(Sacó " + roll1 + " en un dado de " + poolMax + " y necesitaba " + val1 + " o menos)";
                 } 
                 // 4. INTENTO 2: Estadística Secundaria (Si falló la 1ra)
                 else {
                     int roll2 = dice.nextInt(poolMax) + 1;
                     if (roll2 <= val2) {
                         success = true;
-                        reporte = "¡POR POCO!\n" + selectedHero.getName() + " falló usando " + mission.stat1 + ", pero logró salvar la situación improvisando con " + mission.stat2 + ".\n(Sacó " + roll2 + " de " + poolMax + " y necesitaba " + val2 + " o menos)";
+                        reporte = "¡POR POCO!\n" + teamNames + " falló usando " + mission.stat1 + ", pero logró salvar la situación improvisando con " + mission.stat2 + ".\n(Sacó " + roll2 + " de " + poolMax + " y necesitaba " + val2 + " o menos)";
                     } 
                     // 5. INTENTO 3: Reroll por SUERTE (Si fallaron ambas)
                     else {
-                        // Para la suerte, tiramos un dado normal de 6 caras
-                        int luckRoll = dice.nextInt(6) + 1; 
-                        if (luckRoll <= selectedHero.getLuck()) {
+                        int winChance = 5 + (combinedLuck - 1) * 9; 
+                        int luckRoll = dice.nextInt(100) + 1; 
+                        
+                        if (luckRoll <= winChance) {
                             success = true;
-                            reporte = "¡MILAGRO!\n" + selectedHero.getName() + " falló catastróficamente en sus habilidades... \nPero está usando su SUERTE para que todo salga bien y completó la misión.\n(Tirada de Suerte: " + luckRoll + " vs " + selectedHero.getLuck() + ")";
+                            reporte = "¡MILAGRO!\n" + teamNames + " falló catastróficamente en sus habilidades... \nPero usó su pura SUERTE para que todo salga bien al final.\n(Probabilidad de éxito: " + winChance + "%, Tirada: " + luckRoll + ")";
                         }
                 }
             }
@@ -184,17 +266,27 @@ if (missionQueue.isEmpty()) {
                 successfulMissions++;
                 scoreLabel.setText("Misiones Completadas: " + successfulMissions);
                 int currentConfidence = confidenceBar.getValue();
-                int newConf = Math.min(100, currentConfidence + 5);
+                int reward = mission.isBoss ? 50 : 5; // +50 si es jefe, +5 normal
+                int newConf = Math.min(100, currentConfidence + reward);
                 confidenceBar.setValue(newConf);
                 confidenceBar.setString("Confianza: " + newConf + "%");
+                if (mission.isBoss) {
+                    reporte += "\n\n¡LA AMENAZA MAYOR FUE DESTRUIDA! La ciudad los aclama como leyendas. (+50% Confianza)";
+                } else {
+                    reporte += "\n\n(+5% Confianza)";
+                }
                 JOptionPane.showMessageDialog(this, reporte, "Reporte de Misión", JOptionPane.INFORMATION_MESSAGE);
             } else {
                 // Penalización por perder (Misma lógica que el botón NADOTA)
                 int penalty = 0;
-                switch (mission.difficulty) {
-                    case 1: penalty = 1; break; case 2: penalty = 4; break;
-                    case 3: penalty = 8; break; case 4: penalty = 12; break;
-                    case 5: penalty = 16; break; case 6: penalty = 20; break;
+                if (mission.isBoss) {
+                    penalty = 50; // -50% si pierden contra el jefe
+                } else {
+                    switch (mission.difficulty) {
+                        case 1: penalty = 1; break; case 2: penalty = 4; break;
+                        case 3: penalty = 8; break; case 4: penalty = 12; break;
+                        case 5: penalty = 16; break; case 6: penalty = 20; break;
+                    }
                 }
                 
                 int currentConfidence = confidenceBar.getValue();
@@ -202,7 +294,11 @@ if (missionQueue.isEmpty()) {
                 confidenceBar.setValue(newConfidence);
                 confidenceBar.setString("Confianza: " + newConfidence + "%"); // Actualizar texto
                 
-                reporte = "¡FRACASO ROTUNDO!\n" + selectedHero.getName() + " no pudo lidiar con la misión y la ciudad sufrió las consecuencias.\n(-" + penalty + " de Confianza)";
+                if (mission.isBoss) {
+                    reporte = "¡TRAGEDIA!\n" + teamNames + " fueron derrotados por el Jefe.\nLa ciudad ha perdido masivamente la fe en la Agencia.\n(-50% de Confianza)";
+                } else {
+                    reporte = "¡FRACASO ROTUNDO!\n" + teamNames + " no pudo contener la emergencia.\n(-" + penalty + "% de Confianza)";
+                }
                 JOptionPane.showMessageDialog(this, reporte, "Misión Fallida", JOptionPane.ERROR_MESSAGE);
 
                 if (newConfidence == 0) {
@@ -224,18 +320,23 @@ if (missionQueue.isEmpty()) {
             if(!missionQueue.isEmpty()){
                 Mission skippedMission = missionQueue.dequeue();
                 int penalty=0;
-                switch (skippedMission.difficulty) {
-                    case 1: penalty =1; break;
-                    case 2: penalty =4; break;
-                    case 3: penalty =8; break;
-                    case 4: penalty =12; break;
-                    case 5: penalty =16; break;
-                    case 6: penalty =20; break;
+                if(skippedMission.isBoss){
+                    penalty=50;
+                }else{
+                    switch (skippedMission.difficulty) {
+                        case 1: penalty =1; break;
+                        case 2: penalty =4; break;
+                        case 3: penalty =8; break;
+                        case 4: penalty =12; break;
+                        case 5: penalty =16; break;
+                        case 6: penalty =20; break;
+                    }
                 }
                 int confianzaActual = confidenceBar.getValue();
                 int nuevaConfianza= Math.max(0, confianzaActual-penalty);
                 confidenceBar.setValue(nuevaConfianza);
                 confidenceBar.setString("Confianza: " + nuevaConfianza + "%"); // Actualizar texto
+                
                 missionsArea.setText(missionQueue.getAllMissionsText());
                 if (nuevaConfianza <= 0) {
                     timeManager.pauseGameTime(); // Detener los relojes
@@ -262,7 +363,9 @@ if (missionQueue.isEmpty()) {
         // Márgenes generales
         getRootPane().setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         timeManager.startGameTime();
-
+        musicPlayer = new MusicPlayer();
+        musicPlayer.playBackgroundMusic("assets/Shift_Z.wav");
+        isPlayingBossMusic = false;
     }
 
     public static void main(String[] args) {

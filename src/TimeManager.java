@@ -1,25 +1,46 @@
 import javax.swing.Timer;
+import java.util.function.Consumer; // <--- Importante para pasar la penalización
 public class TimeManager {
     private Timer missionTimer;
     private Timer recoveryTimer;
     private Timer clockTimer;
+    private Timer countdownTimer;
     private MissionPQ missionPQ;
     private MissionGenerator missionGen;
     private HeroLinkedList heroRoster;
 
     private Runnable updateUICallback;
+    private Consumer<Mission> onMissionExpired; // NUEVO: Notificador de expiración
     
     private int gameHours = 10;
     private int gameMinutes = 55;
 
-    public TimeManager(MissionPQ queue, MissionGenerator generator, HeroLinkedList roster, Runnable updateUICallback){
+    public TimeManager(MissionPQ queue, MissionGenerator generator, HeroLinkedList roster, Runnable updateUICallback,Consumer<Mission> onMissionExpired){
         this.missionPQ = queue;
         this.missionGen = generator;
         this.heroRoster = roster;
         this.updateUICallback = updateUICallback;
+        this.onMissionExpired = onMissionExpired;
         setupTimers();
     }
     private void setupTimers(){
+        countdownTimer = new Timer(1000, e -> {
+            
+            // Recibimos nuestro arreglo puro
+            Mission[] expiradas = missionPQ.tickAndGetExpired();
+            
+            // Recorremos el arreglo con un ciclo for tradicional
+            for (int i = 0; i < expiradas.length; i++) {
+                if (onMissionExpired != null) {
+                    onMissionExpired.accept(expiradas[i]); // Avisar a la interfaz que castigue
+                }
+            }
+            
+            // Refrescar UI cada segundo para ver los números bajar (7s, 6s, 5s...)
+            if (updateUICallback != null) {
+                updateUICallback.run();
+            }
+        });
         missionTimer = new Timer(10000, e->{
             Mission nuevaMission=missionGen.generateMission();
             missionPQ.enqueue(nuevaMission);
@@ -68,10 +89,13 @@ public class TimeManager {
         missionTimer.start();
         recoveryTimer.start();
         clockTimer.start();
+        countdownTimer.start();
+        
     }
     public void pauseGameTime(){
         missionTimer.stop();
         recoveryTimer.stop();
         clockTimer.stop();
+        countdownTimer.stop();
     }
 }
